@@ -1,6 +1,7 @@
 #include "ofxImageEffect.h"
 #include "ofxParam.h"
 #include "envelope.h"
+#include "render_support.h"
 #include <cstring>
 #include <cstdio>
 #include <string>
@@ -23,7 +24,7 @@ static void toggle(OfxParamSetHandle ps,const char* name,int initial){OfxPropert
 static double mapped(OfxImageEffectHandle fx,double t){
  OfxParamSetHandle ps;e->getParamSet(fx,&ps);OfxParamHandle h;int mode=0;a->paramGetHandle(ps,"Preset",&h,nullptr);a->paramGetValueAtTime(h,t,&mode);
  OfxImageClipHandle clip;OfxPropertySetHandle cp;e->clipGetHandle(fx,"Source",&clip,&cp);double fps=24;p->propGetDouble(cp,kOfxImageEffectPropFrameRate,0,&fps);
- if(!choiceValue(ps,"Time enabled",t))return t;
+ if(!choiceValue(ps,"Time enabled",t)||mode==0)return t;
  std::array<double,16> steps{};if(mode==5)for(int i=0;i<16;i++){char name[32];std::snprintf(name,sizeof(name),"Step %02d",i+1);steps[i]=value(ps,name,t);}
  const double bpm=value(ps,"BPM",t),beats=value(ps,"Beats",t),origin=value(ps,"Origin frame",t);
  if(mode==5 && choiceValue(ps,"Custom interpolation",t)!=0){
@@ -31,8 +32,8 @@ static double mapped(OfxImageEffectHandle fx,double t){
   const double phase=(t-origin)/length-cycle;
   steps.fill(gross::curve(steps,phase,choiceValue(ps,"Custom interpolation",t)));
  }
- double result=gross::frame(t,fps,value(ps,"BPM",t),value(ps,"Beats",t),value(ps,"Origin frame",t),mode,steps);
- double range[2];if(p->propGetDoubleN(cp,kOfxImageEffectPropFrameRange,2,range)==kOfxStatOK)result=std::clamp(result,range[0],range[1]);return result;
+ double result=gross::frame(t,fps,bpm,beats,origin,mode,steps);
+ double range[2];if(p->propGetDoubleN(cp,kOfxImageEffectPropFrameRange,2,range)==kOfxStatOK)result=gross::clampFrame(result,range[0],range[1]);return result;
 }
 struct Image {OfxPropertySetHandle h=nullptr;~Image(){if(h)e->clipReleaseImage(h);}};
 static OfxStatus entry(const char* action,const void* handle,OfxPropertySetHandle in,OfxPropertySetHandle out){
@@ -45,7 +46,7 @@ static OfxStatus entry(const char* action,const void* handle,OfxPropertySetHandl
  if(!std::strcmp(action,kOfxImageEffectActionDescribeInContext)){
  OfxPropertySetHandle q;for(auto name:{"Source","Output"}){e->clipDefine(fx,name,&q);str(q,kOfxImageEffectPropSupportedComponents,kOfxImageComponentRGBA);integer(q,kOfxImageEffectPropTemporalClipAccess,1);}
  OfxParamSetHandle ps;e->getParamSet(fx,&ps);a->paramDefine(ps,kOfxParamTypeChoice,"Preset",&q);for(int i=0;i<int(gross::presetNames.size());i++)str(q,kOfxParamPropChoiceOption,gross::presetNames[i],i);
- toggle(ps,"Time enabled",1);choice(ps,"Custom interpolation",{"Hold","Linear","Smooth"});
+ toggle(ps,"Time enabled",1);toggle(ps,"Safe frame fallback",1);choice(ps,"Custom interpolation",{"Hold","Linear","Smooth"});
  number(ps,"BPM",120,1,400);number(ps,"Beats",4,1,16);number(ps,"Origin frame",0,-1000000,1000000);
  for(int i=0;i<16;i++){char name[32];std::snprintf(name,sizeof(name),"Step %02d",i+1);number(ps,name,i/16.0,0,1);}
  toggle(ps,"Fade enabled",0);
@@ -57,7 +58,7 @@ static OfxStatus entry(const char* action,const void* handle,OfxPropertySetHandl
  for(int i=0;i<16;i++){char name[32];std::snprintf(name,sizeof(name),"Fade point %02d",i+1);number(ps,name,1,0,1);}
  // Group controls while retaining all original parameter identifiers.
  for(auto group:{"Timing","Custom time","Video fade","Custom fade"}){a->paramDefine(ps,kOfxParamTypeGroup,group,&q);integer(q,kOfxParamPropGroupOpen,0);}
- for(auto name:{"Preset","Time enabled","BPM","Beats","Origin frame"}){OfxParamHandle h;a->paramGetHandle(ps,name,&h,&q);str(q,kOfxParamPropParent,"Timing");}
+ for(auto name:{"Preset","Time enabled","Safe frame fallback","BPM","Beats","Origin frame"}){OfxParamHandle h;a->paramGetHandle(ps,name,&h,&q);str(q,kOfxParamPropParent,"Timing");}
  for(auto name:{"Fade enabled","Fade preset","Fade target","Fade beats","Fade phase","Fade depth","Fade minimum","Fade duty"}){OfxParamHandle h;a->paramGetHandle(ps,name,&h,&q);str(q,kOfxParamPropParent,"Video fade");}
  for(int i=0;i<16;i++){char name[32];OfxParamHandle h;std::snprintf(name,sizeof(name),"Step %02d",i+1);a->paramGetHandle(ps,name,&h,&q);str(q,kOfxParamPropParent,"Custom time");std::snprintf(name,sizeof(name),"Fade point %02d",i+1);a->paramGetHandle(ps,name,&h,&q);str(q,kOfxParamPropParent,"Custom fade");}
  for(auto name:{"Custom interpolation","Fade interpolation"}){OfxParamHandle h;a->paramGetHandle(ps,name,&h,&q);str(q,kOfxParamPropParent,!std::strcmp(name,"Custom interpolation")?"Custom time":"Custom fade");}
@@ -65,14 +66,33 @@ static OfxStatus entry(const char* action,const void* handle,OfxPropertySetHandl
  // Resolve may bypass temporal remapping for identity responses. Always render
  // through clipGetImage(mapped time), including when fade is disabled.
  if(!std::strcmp(action,kOfxImageEffectActionIsIdentity))return kOfxStatReplyDefault;
- if(!std::strcmp(action,kOfxImageEffectActionGetFramesNeeded)){double t;p->propGetDouble(in,kOfxPropTime,0,&t);double sourceTime=mapped(fx,t);double r[2]={sourceTime,sourceTime};p->propSetDoubleN(out,"OfxImageClipPropFrameRange_Source",2,r);return kOfxStatOK;}
+ if(!std::strcmp(action,kOfxImageEffectActionGetFramesNeeded)){double t;p->propGetDouble(in,kOfxPropTime,0,&t);double sourceTime=mapped(fx,t);OfxParamSetHandle ps;e->getParamSet(fx,&ps);
+ double r[4]={sourceTime,sourceTime,t,t};int count=sourceTime!=t&&choiceValue(ps,"Safe frame fallback",t)?4:2;
+ p->propSetDoubleN(out,"OfxImageClipPropFrameRange_Source",count,r);return kOfxStatOK;}
  if(!std::strcmp(action,kOfxImageEffectActionRender)){
  double t;p->propGetDouble(in,kOfxPropTime,0,&t);OfxImageClipHandle source,dest;e->clipGetHandle(fx,"Source",&source,nullptr);e->clipGetHandle(fx,"Output",&dest,nullptr);Image s,d;
- if(e->clipGetImage(source,mapped(fx,t),nullptr,&s.h)!=kOfxStatOK)return kOfxStatFailed;
+ OfxParamSetHandle ps;e->getParamSet(fx,&ps);
+ const double requested=mapped(fx,t);bool usedFallback=false;
+ int sourceStatus=gross::fetchTemporal(requested,t,choiceValue(ps,"Safe frame fallback",t)!=0,[&](double frame){
+  if(s.h){e->clipReleaseImage(s.h);s.h=nullptr;}
+  return e->clipGetImage(source,frame,nullptr,&s.h);
+ },usedFallback);
+ if(sourceStatus!=kOfxStatOK){
+  if(e->abort(fx))return kOfxStatOK;
+  std::fprintf(stderr,"Gross Video: source request failed, output=%.9g requested=%.9g fallback=%d status=%d\n",t,requested,int(usedFallback),sourceStatus);
+  return sourceStatus;
+ }
+ if(usedFallback)std::fprintf(stderr,"Gross Video: unavailable temporal frame %.9g; using output frame %.9g\n",requested,t);
  if(e->clipGetImage(dest,t,nullptr,&d.h)!=kOfxStatOK)return kOfxStatFailed;
- void *sp,*dp;int sb[4],db[4],win[4],sr,dr;p->propGetPointer(s.h,kOfxImagePropData,0,&sp);p->propGetPointer(d.h,kOfxImagePropData,0,&dp);p->propGetIntN(s.h,kOfxImagePropBounds,4,sb);p->propGetIntN(d.h,kOfxImagePropBounds,4,db);p->propGetIntN(in,kOfxImageEffectPropRenderWindow,4,win);p->propGetInt(s.h,kOfxImagePropRowBytes,0,&sr);p->propGetInt(d.h,kOfxImagePropRowBytes,0,&dr);
- OfxParamSetHandle ps;e->getParamSet(fx,&ps);float gain=1;bool opacity=false,premultiplied=true;
- if(choiceValue(ps,"Fade enabled",t)){
+ void *sp=nullptr,*dp=nullptr;int sb[4]={},db[4]={},win[4]={},sr=0,dr=0;p->propGetPointer(s.h,kOfxImagePropData,0,&sp);p->propGetPointer(d.h,kOfxImagePropData,0,&dp);p->propGetIntN(s.h,kOfxImagePropBounds,4,sb);p->propGetIntN(d.h,kOfxImagePropBounds,4,db);p->propGetIntN(in,kOfxImageEffectPropRenderWindow,4,win);p->propGetInt(s.h,kOfxImagePropRowBytes,0,&sr);p->propGetInt(d.h,kOfxImagePropRowBytes,0,&dr);
+ if(!gross::validImage(sp,sb,sr)||!gross::validImage(dp,db,dr))return kOfxStatErrImageFormat;
+ for(auto image:{s.h,d.h}){
+  char *depth=nullptr,*components=nullptr;
+  if(p->propGetString(image,kOfxImageEffectPropPixelDepth,0,&depth)!=kOfxStatOK||!depth||std::strcmp(depth,kOfxBitDepthFloat))return kOfxStatErrImageFormat;
+  if(p->propGetString(image,kOfxImageEffectPropComponents,0,&components)!=kOfxStatOK||!components||std::strcmp(components,kOfxImageComponentRGBA))return kOfxStatErrImageFormat;
+ }
+ float gain=1;bool opacity=false,premultiplied=true;
+ if(choiceValue(ps,"Fade enabled",t)&&value(ps,"Fade depth",t)!=0&&value(ps,"Fade minimum",t)!=1){
   OfxPropertySetHandle cp;e->clipGetPropertySet(source,&cp);double fps=24;p->propGetDouble(cp,kOfxImageEffectPropFrameRate,0,&fps);
   const double length=std::max(1.0,fps*60/value(ps,"BPM",t)*value(ps,"Fade beats",t));
   double phase=(t-value(ps,"Origin frame",t))/length+value(ps,"Fade phase",t);phase-=std::floor(phase);
@@ -85,7 +105,7 @@ static OfxStatus entry(const char* action,const void* handle,OfxPropertySetHandl
  }
  const int left=std::max(win[0],db[0]),right=std::min(win[2],db[2]);
  for(int y=std::max(win[1],db[1]);y<std::min(win[3],db[3]);y++){
-  if(e->abort(fx))break;
+  if((y&31)==0&&e->abort(fx))break;
   if(right<=left)continue;
   auto row=(char*)dp+std::ptrdiff_t(y-db[1])*dr;
   const int lo=std::max(left,sb[0]),hi=std::min(right,sb[2]);
@@ -100,6 +120,6 @@ static OfxStatus entry(const char* action,const void* handle,OfxPropertySetHandl
  return kOfxStatReplyDefault;
  }catch(...){return kOfxStatFailed;}
 }
-static OfxPlugin plugin={kOfxImageEffectPluginApi,1,"com.tristokoni.grossvideo",1,1,setHost,entry};
+static OfxPlugin plugin={kOfxImageEffectPluginApi,1,"com.tristokoni.grossvideo",1,2,setHost,entry};
 extern "C" __attribute__((visibility("default"))) int OfxGetNumberOfPlugins(){return 1;}
 extern "C" __attribute__((visibility("default"))) OfxPlugin* OfxGetPlugin(int n){return n==0?&plugin:nullptr;}

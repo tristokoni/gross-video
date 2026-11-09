@@ -95,3 +95,13 @@ In Resolve verify an existing project is unchanged with Fade disabled; then try 
 ### Time-only rendering fix
 
 Removed temporal identity delegation: Resolve could skip time modulation when fade was disabled, zero depth, or minimum 1. All combinations now use the same source-frame request and rendering path. Full-row copy optimization remains active when gain is 1. Restart Resolve after installing; if a clip still shows an old result, clear its render cache. Validate Reverse and Stutter with Fade enabled off, then on at depth 0, then at nonzero depth.
+
+## Render reliability update (1.2)
+
+`Safe frame fallback` is on by default in Timing. When Resolve cannot supply a requested temporal frame, the plugin tries the current output-time source frame instead. This can avoid end-of-clip failures, but that individual frame will lose the intended time modulation. Disable it for strict rendering that fails rather than substituting a frame. Both potential requests are declared to the host in FramesNeeded. If the current frame is also unavailable, the error is propagated; decoder, Fusion graph and GPU failures are not hidden. Failed requests report output time, requested source time and status to stderr (availability in Resolve logs depends on how Resolve was launched).
+
+The clip range is treated as inclusive, as specified by OFX. Fractional bounds are restricted to valid whole frames; invalid/nonfinite metadata is not used for clamping. No unconditional last-frame subtraction is applied. Null buffers, incompatible image formats and insufficient row stride are rejected before copying pixels.
+
+Additional CPU improvements: reuse BPM/length/origin reads, bypass time math for Normal, skip envelope evaluation for neutral fade, poll cancellation every 32 scanlines, build macOS with `-O3`. Temporal source-frame decoding can still dominate runtime. This is not a GPU implementation, and no Resolve/macOS speedup has been measured.
+
+The reported reproducible end-of-render Fusion composition error has not been reproduced in this Linux environment. Test the failing section after installation and clearing its old render cache. A fallback may change the picture slightly; inspect the last frames. If export still fails, retain the exact frame/timecode, Resolve version, active presets and full error text for diagnosis.
