@@ -3,11 +3,11 @@
 #include <array>
 #include <cmath>
 namespace gross {
-inline constexpr std::array<const char*,18> presetNames={
+inline constexpr std::array<const char*,26> presetNames={
  "Normal","Stutter x4","Reverse","Freeze","Ping pong","Custom steps",
  "Chaos","Complex","Stutter x8","Stutter x16","Reverse chops",
  "Half speed","Double speed","Tape stop","Speed up","Bounce chops",
- "Shuffle","Glitch hold"};
+ "Shuffle","Glitch hold","Vinyl scratch","Baby scratch","Transformer scratch","Scratch rewind","Glitch burst","Glitch staircase","Beat juggle","Broken tape"};
 
 inline double frame(double t,double fps,double bpm,double beats,double origin,int preset,const std::array<double,16>& steps) {
  const double length=std::max(1.0,fps*60.0/std::max(1.0,bpm)*beats);
@@ -49,6 +49,14 @@ inline double frame(double t,double fps,double bpm,double beats,double origin,in
  case 17:{constexpr int order[]={0,0,0,3,7,7,6,6,8,12,12,12,4,14,14,15};
  p=order[step]/16.0;
  break;}
+ case 18:p=phase+0.12*std::sin(phase*8*3.141592653589793);break;
+ case 19:{double u=std::fmod(phase*4,1.0);p=std::floor(phase*4)/4+(u<0.5?u:1-u)/2;break;}
+ case 20:{double u=std::fmod(phase*8,1.0);p=std::floor(phase*4)/4+(u<0.5?u:1-u)/4;if(step%2)p=std::floor(p*16)/16;break;}
+ case 21:p=phase<0.75?phase*1.2:0.9-(phase-0.75)*3.6;break;
+ case 22:p=phase<0.5?phase:0.5+std::fmod((phase-0.5)*8,0.5);break;
+ case 23:p=std::floor(phase*8)/8;break;
+ case 24:p=(step%2?0.5:0.0)+local/8;break;
+ case 25:p=phase<0.5?phase:(step%3==0?0.5:phase-0.125);break;
  }
  return std::floor(origin+cycle*length+std::clamp(p,0.0,1.0-1.0/length)*length+1e-7);
 }

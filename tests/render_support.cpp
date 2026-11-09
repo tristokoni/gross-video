@@ -15,6 +15,9 @@ int main(){
  assert(gross::validImage(pixels,bounds,-64));
  assert(!gross::validImage(pixels,bounds,63));
  assert(!gross::validImage(nullptr,bounds,64));
+ int enormous[]={std::numeric_limits<int>::min(),0,std::numeric_limits<int>::max(),1};
+ assert(!gross::validImage(pixels,enormous,64));
+ int empty[]={0,0,0,0};assert(!gross::validImage(pixels,empty,0));
  bool used=false;std::vector<double> requests;
  auto fetch=[&](double t){requests.push_back(t);return t==99?0:1;};
  assert(gross::fetchTemporal(120,99,true,fetch,used)==0&&used);

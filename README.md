@@ -105,3 +105,21 @@ The clip range is treated as inclusive, as specified by OFX. Fractional bounds a
 Additional CPU improvements: reuse BPM/length/origin reads, bypass time math for Normal, skip envelope evaluation for neutral fade, poll cancellation every 32 scanlines, build macOS with `-O3`. Temporal source-frame decoding can still dominate runtime. This is not a GPU implementation, and no Resolve/macOS speedup has been measured.
 
 The reported reproducible end-of-render Fusion composition error has not been reproduced in this Linux environment. Test the failing section after installation and clearing its old render cache. A fallback may change the picture slightly; inspect the last frames. If export still fails, retain the exact frame/timecode, Resolve version, active presets and full error text for diagnosis.
+
+## Stability, scratch presets and music analysis (1.3)
+
+Fixed an OFX API violation in parameter description: the plugin used `paramGetHandle` during DescribeInContext, where instance parameter handles are forbidden. A host rejecting those calls could leave a stale property handle, assigning group parents incorrectly (including self-parenting). Groups now exist before children and parenting uses only the descriptor property handles returned by `paramDefine`. A strict mock host test rejects descriptor-time instance access and validates the hierarchy. This is a concrete defect; the reported macOS save crash has not been reproduced or confirmed resolved here. Check saving/reopening a copy of your project before replacing your working project. If an old instance retains malformed UI state, test removing and re-adding the updated effect in that copy.
+
+Numeric parameter read failures now stop the action rather than using uninitialized handles, and nonfinite parameter values are rejected. Render layout checks also reject empty or excessively large bounds before offset arithmetic. No persistent frame buffers or audio data are kept between actions. Hardware/codec limits still apply; this does not guarantee performance on every device.
+
+Eight appended presets preserve existing preset indices: Vinyl scratch, Baby scratch, Transformer scratch, Scratch rewind, Glitch burst, Glitch staircase, Beat juggle, Broken tape. They manipulate video time only.
+
+### Analyze music button
+
+Standard OpenFX image effects do not receive timeline audio. Under **Music sync**, choose **Music WAV**, set **Music start frame** to the effect-time frame where that file starts, then press **Analyze music**. The button analyzes at most the first 30 seconds and writes BPM and Origin frame keyframes at the current playhead time. If timing controls already contain animation, these keyframes coexist with it; inspect or remove unwanted prior keyframes for a constant tempo.
+
+Supported files: ordinary RIFF WAV, PCM 16/24-bit or IEEE float32, 8–192 kHz, up to 8 channels, at least 8 seconds. MP3, AAC and extensible/RF64 WAV are not supported; export a compatible WAV first. The file is only read when the button is clicked. Rendering and reopening the project use the saved numeric settings without reopening the audio file.
+
+The lightweight detector uses onset-energy autocorrelation, roughly 60–182 BPM. It estimates steady tempo and an initial strong onset, not the musical downbeat, variable tempo, or the audio track position in Resolve. It may choose half/double tempo; check the result by ear and adjust BPM/Origin. Silence or ambiguous rhythm reports an error without changing controls. Analysis is synchronous and bounded; the UI may briefly pause on slower devices.
+
+Validated on Linux: all timing/envelope/render support tests, strict OFX descriptor regression, identity regression, synthetic 120 BPM WAV analysis and rejection of silence/missing files, under AddressSanitizer and UndefinedBehaviorSanitizer. Actual macOS save/reopen, new preset playback and button integration require Resolve validation.
