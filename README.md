@@ -65,3 +65,29 @@ bash scripts/install-mac.sh
 ```
 
 Restart Resolve to load the expanded preset menu. The installer preserves the previous plugin outside the scanned Plugins directory.
+
+## Independent video fade and custom controls (1.1)
+
+**Timing** groups the original controls and a new Time enabled checkbox. Disable it to use only the fade section. Original presets and parameter identifiers are preserved. **Custom time** contains the original 16 source-position steps plus interpolation: Hold preserves the existing sequencer; Linear connects positions; Smooth eases between them. Interpolation wraps from the last point to the first. This interpolates source time, not pixels; frame selection remains discrete.
+
+**Video fade** is disabled by default and can be combined with any time preset:
+
+- Fade preset: Gate, Pulse, Fade in, Fade out, Triangle, Sidechain, Strobe, Double pulse, Tremolo, Custom envelope.
+- Fade target: Black dims RGB while preserving alpha; Opacity fades transparency to reveal a lower video track. With no lower track, transparent areas may also appear black.
+- Fade beats controls its own cycle length using shared BPM and Origin frame.
+- Fade phase offsets that cycle (0–1); Fade depth blends the effect (0 bypasses); Fade minimum controls its lowest level.
+- Fade duty controls gate/pulse width and sidechain recovery time. It does not change Fade in/out, Triangle, Tremolo or Custom envelope.
+- Custom fade offers 16 brightness/opacity points (0–1) with independent Hold, Linear or Smooth interpolation. Choose Custom envelope to activate them.
+
+No audio input or sidechain detection is required: Sidechain is a repeating recovery envelope synchronized to the manual BPM. Controls can be animated using Resolve where supported. This update uses grouped host controls, not a drawn curve editor.
+
+Performance improvements: full-row copies instead of per-pixel copies, custom points read only when selected, one source-time calculation per frame request, and OpenFX identity delegation when fade is inactive (allowing the host to reuse source frames). Fade processes contiguous float RGBA rows and preserves HDR values and premultiplication. CPU only; actual speed depends on Resolve's decoder/cache and temporal frame requests. No macOS performance measurement has been made.
+
+Additional validation:
+
+```sh
+c++ -std=c++17 -O2 -Wall -Wextra -Werror tests/envelope.cpp -o build/envelope-tests
+./build/envelope-tests
+```
+
+In Resolve verify an existing project is unchanged with Fade disabled; then try Gate and Sidechain, disable Time to isolate the fade, and test Opacity over a second video track. Check scrubbing and export. New controls and host identity handling still require validation in Resolve on macOS.
