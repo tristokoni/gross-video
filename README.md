@@ -81,7 +81,7 @@ Restart Resolve to load the expanded preset menu. The installer preserves the pr
 
 No audio input or sidechain detection is required: Sidechain is a repeating recovery envelope synchronized to the manual BPM. Controls can be animated using Resolve where supported. This update uses grouped host controls, not a drawn curve editor.
 
-Performance improvements: full-row copies instead of per-pixel copies, custom points read only when selected, one source-time calculation per frame request, and OpenFX identity delegation when fade is inactive (allowing the host to reuse source frames). Fade processes contiguous float RGBA rows and preserves HDR values and premultiplication. CPU only; actual speed depends on Resolve's decoder/cache and temporal frame requests. No macOS performance measurement has been made.
+Performance improvements: full-row copies instead of per-pixel copies, custom points read only when selected, one source-time calculation per frame request, and contiguous row processing. Temporal remapping always uses the render action, including when fade is disabled. Fade processes contiguous float RGBA rows and preserves HDR values and premultiplication. CPU only; actual speed depends on Resolve's decoder/cache and temporal frame requests. No macOS performance measurement has been made.
 
 Additional validation:
 
@@ -90,4 +90,8 @@ c++ -std=c++17 -O2 -Wall -Wextra -Werror tests/envelope.cpp -o build/envelope-te
 ./build/envelope-tests
 ```
 
-In Resolve verify an existing project is unchanged with Fade disabled; then try Gate and Sidechain, disable Time to isolate the fade, and test Opacity over a second video track. Check scrubbing and export. New controls and host identity handling still require validation in Resolve on macOS.
+In Resolve verify an existing project is unchanged with Fade disabled; then try Gate and Sidechain, disable Time to isolate the fade, and test Opacity over a second video track. Check scrubbing and export. New controls still require validation in Resolve on macOS.
+
+### Time-only rendering fix
+
+Removed temporal identity delegation: Resolve could skip time modulation when fade was disabled, zero depth, or minimum 1. All combinations now use the same source-frame request and rendering path. Full-row copy optimization remains active when gain is 1. Restart Resolve after installing; if a clip still shows an old result, clear its render cache. Validate Reverse and Stutter with Fade enabled off, then on at depth 0, then at nonzero depth.

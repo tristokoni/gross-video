@@ -62,13 +62,9 @@ static OfxStatus entry(const char* action,const void* handle,OfxPropertySetHandl
  for(int i=0;i<16;i++){char name[32];OfxParamHandle h;std::snprintf(name,sizeof(name),"Step %02d",i+1);a->paramGetHandle(ps,name,&h,&q);str(q,kOfxParamPropParent,"Custom time");std::snprintf(name,sizeof(name),"Fade point %02d",i+1);a->paramGetHandle(ps,name,&h,&q);str(q,kOfxParamPropParent,"Custom fade");}
  for(auto name:{"Custom interpolation","Fade interpolation"}){OfxParamHandle h;a->paramGetHandle(ps,name,&h,&q);str(q,kOfxParamPropParent,!std::strcmp(name,"Custom interpolation")?"Custom time":"Custom fade");}
  return kOfxStatOK;}
- if(!std::strcmp(action,kOfxImageEffectActionIsIdentity)){
-  double t;p->propGetDouble(in,kOfxPropTime,0,&t);OfxParamSetHandle ps;e->getParamSet(fx,&ps);
-  if(!choiceValue(ps,"Fade enabled",t)||value(ps,"Fade depth",t)==0||value(ps,"Fade minimum",t)==1){
-   str(out,kOfxPropName,"Source");p->propSetDouble(out,kOfxPropTime,0,mapped(fx,t));return kOfxStatOK;
-  }
-  return kOfxStatReplyDefault;
- }
+ // Resolve may bypass temporal remapping for identity responses. Always render
+ // through clipGetImage(mapped time), including when fade is disabled.
+ if(!std::strcmp(action,kOfxImageEffectActionIsIdentity))return kOfxStatReplyDefault;
  if(!std::strcmp(action,kOfxImageEffectActionGetFramesNeeded)){double t;p->propGetDouble(in,kOfxPropTime,0,&t);double sourceTime=mapped(fx,t);double r[2]={sourceTime,sourceTime};p->propSetDoubleN(out,"OfxImageClipPropFrameRange_Source",2,r);return kOfxStatOK;}
  if(!std::strcmp(action,kOfxImageEffectActionRender)){
  double t;p->propGetDouble(in,kOfxPropTime,0,&t);OfxImageClipHandle source,dest;e->clipGetHandle(fx,"Source",&source,nullptr);e->clipGetHandle(fx,"Output",&dest,nullptr);Image s,d;
