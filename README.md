@@ -10,7 +10,7 @@ Requires macOS 11+ and Apple's Command Line Tools (`xcode-select --install` if m
 bash scripts/install-mac.sh
 ```
 
-Builds a universal Apple Silicon / Intel bundle, signs it locally, and installs it in `/Library/OFX/Plugins`. The installation asks for your Mac password through sudo. It refuses to overwrite an existing plugin. For build only: `bash scripts/build-mac.sh`. No paid developer account is needed for this local build.
+Builds a universal Apple Silicon / Intel bundle, signs it locally, and installs it in `/Library/OFX/Plugins`. The installation asks for your Mac password through sudo. On updates it moves the previous bundle into `/Library/OFX/GrossVideo-backups/` before installing. For build only: `bash scripts/build-mac.sh`. No paid developer account is needed for this local build.
 
 Restart Resolve, find **Gross Video** in Effects, apply it to a video clip, and inspect its effect controls. If it is absent, check Resolve's Video Plugins preferences and plugin loading errors. Host support must be verified with your exact Resolve Free version.
 
@@ -37,3 +37,31 @@ c++ -std=c++17 -Wall -Wextra -Werror tests/timing.cpp -o build/timing-tests
 ```
 
 CPU renderer, float RGBA only; no frame interpolation, GPU acceleration or graphical curve editor in this prototype. OpenFX headers are vendored under their upstream license in `vendor/openfx/LICENSE.md`; upstream revision is recorded in `vendor/openfx/REVISION`. No changes to the reusable cloud configuration are required by this project.
+
+## Additional presets and updating
+
+Chaos and Complex are original video patterns inspired by rhythmic time manipulation, not copies of Gross Beat's proprietary presets. Existing preset indices are preserved for saved Resolve projects.
+
+| Preset | Motion |
+| --- | --- |
+| Chaos | 16 shuffled slices with selected slices reversed |
+| Complex | Repeats, forward slices, holds and a reversed ending |
+| Stutter x8 / x16 | Repeat the first eighth / sixteenth of the cycle |
+| Reverse chops | Reverse each sixteenth independently |
+| Half speed / Double speed | Half-speed motion / two passes per cycle |
+| Tape stop | Gradually slow to a stop within each cycle |
+| Speed up | Accelerate through the cycle |
+| Bounce chops | Forward and backward within each quarter |
+| Shuffle | Reorder 16 moving slices |
+| Glitch hold | Rhythmic held frames and jumps |
+
+Patterns repeat every cycle and give the same result during scrubbing and export. At low frame rates or very fast BPM, short slices can contain only one or two frames.
+
+Quit Resolve, then update from your existing project folder:
+
+```sh
+git pull origin main
+bash scripts/install-mac.sh
+```
+
+Restart Resolve to load the expanded preset menu. The installer preserves the previous plugin outside the scanned Plugins directory.
