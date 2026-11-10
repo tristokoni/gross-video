@@ -7,6 +7,7 @@
 #include <cstring>
 #include <cstdio>
 #include <string>
+
 static OfxHost* host;
 static OfxPropertySuiteV1* p;
 static OfxImageEffectSuiteV1* e;
@@ -15,6 +16,27 @@ static OfxMessageSuiteV1* messages;
 static void setHost(OfxHost* h){host=h;}
 static void str(OfxPropertySetHandle h,const char* k,const char* v,int i=0){p->propSetString(h,k,i,v);}
 static void integer(OfxPropertySetHandle h,const char* k,int v){p->propSetInt(h,k,0,v);}
+// Values live only for one OFX action, never across frames or instances.
+struct ReadCache {OfxParamHandle handle=nullptr;double real=0;int integer=0;bool hasReal=false,hasInt=false;};
+struct ActionReads {
+ struct Slot {char name[40]={};ReadCache read;};
+ std::array<Slot,64> entries{};size_t count=0;double time=0;bool hasTime=false;
+ OfxParamSetHandle set=nullptr;
+};
+static thread_local ActionReads* reads=nullptr;
+struct ReadScope {ActionReads local;ActionReads* previous=reads;ReadScope(){reads=&local;}~ReadScope(){reads=previous;}};
+static ReadCache& parameter(OfxParamSetHandle ps,const char* name,double time){
+ if(reads->set!=ps||(reads->hasTime&&reads->time!=time)){reads->count=0;reads->set=ps;}
+ reads->time=time;reads->hasTime=true;
+ size_t i=0;for(;i<reads->count;i++)if(!std::strcmp(reads->entries[i].name,name))break;
+ if(i==reads->count){
+  if(i==reads->entries.size()||std::strlen(name)>=sizeof(reads->entries[i].name))throw OfxStatus(kOfxStatErrValue);
+  auto& slot=reads->entries[reads->count++];std::strcpy(slot.name,name);slot.read=ReadCache{};
+ }
+ auto& r=reads->entries[i].read;
+ if(!r.handle){auto status=a->paramGetHandle(ps,name,&r.handle,nullptr);if(status!=kOfxStatOK)throw status;}
+ return r;
+}
 static void defineParam(OfxParamSetHandle ps,const char* type,const char* name,OfxPropertySetHandle* q){
  auto status=a->paramDefine(ps,type,name,q);if(status!=kOfxStatOK)throw status;
  if(!std::strcmp(type,kOfxParamTypeGroup))return;
@@ -24,14 +46,32 @@ static void defineParam(OfxParamSetHandle ps,const char* type,const char* name,O
  else if(!std::strncmp(name,"Fade ",5))parent="Video fade";
  else if(!std::strncmp(name,"Music ",6)||!std::strcmp(name,"Analyze music"))parent="Music sync";
  str(*q,kOfxParamPropParent,parent);
+ if(!std::strcmp(name,"Reset time pattern"))str(*q,kOfxParamPropParent,"Custom time");
+ if(!std::strcmp(name,"Reset fade pattern"))str(*q,kOfxParamPropParent,"Custom fade");
+ if(!std::strcmp(name,"Preset"))str(*q,kOfxPropLabel,"Time preset");
+ if(!std::strcmp(name,"Beats"))str(*q,kOfxPropLabel,"Time cycle (beats)");
+ if(!std::strcmp(name,"Origin frame"))str(*q,kOfxPropLabel,"Beat anchor (frame)");
+ if(!std::strcmp(name,"Fade depth"))str(*q,kOfxPropLabel,"Fade amount");
+ if(!std::strcmp(name,"Fade beats"))str(*q,kOfxPropLabel,"Fade cycle (beats)");
+ if(!std::strcmp(name,"Fade duty"))str(*q,kOfxPropLabel,"Pulse width / recovery");
+ if(!std::strcmp(name,"BPM"))str(*q,kOfxParamPropHint,"Shared tempo for time and fade. Use Music sync for WAV analysis.");
+ if(!std::strcmp(name,"Origin frame"))str(*q,kOfxParamPropHint,"Frame of the beat anchor. Align here sets it to the current playhead.");
+ if(!std::strncmp(name,"Step ",5))str(*q,kOfxParamPropHint,"Source position within the cycle: 0 is the start, 1 the end. Interpolation connects adjacent points.");
+ if(!std::strncmp(name,"Fade point ",11))str(*q,kOfxParamPropHint,"Envelope level: 0 is fully faded, 1 is fully visible.");
+ if(!std::strcmp(name,"Safe frame fallback"))str(*q,kOfxParamPropHint,"Use the current frame if Resolve cannot supply a retimed frame. May change that frame's effect.");
 }
 static void number(OfxParamSetHandle ps,const char* name,double value,double low,double high){
  OfxPropertySetHandle q; defineParam(ps,kOfxParamTypeDouble,name,&q);
  p->propSetDouble(q,kOfxParamPropDefault,0,value);p->propSetDouble(q,kOfxParamPropMin,0,low);p->propSetDouble(q,kOfxParamPropMax,0,high);
  p->propSetDouble(q,kOfxParamPropDisplayMin,0,low);p->propSetDouble(q,kOfxParamPropDisplayMax,0,high);
+ integer(q,kOfxParamPropDigits,high<=1?3:2);
+ p->propSetDouble(q,kOfxParamPropIncrement,0,high<=1?0.01:1);
+ if(!std::strcmp(name,"Origin frame")||!std::strcmp(name,"Music start frame")){
+  p->propSetDouble(q,kOfxParamPropDisplayMin,0,-1000);p->propSetDouble(q,kOfxParamPropDisplayMax,0,10000);
+ }
 }
-static double value(OfxParamSetHandle ps,const char* name,double t){OfxParamHandle h=nullptr;double v=0;auto status=a->paramGetHandle(ps,name,&h,nullptr);if(status!=kOfxStatOK)throw status;status=a->paramGetValueAtTime(h,t,&v);if(status!=kOfxStatOK)throw status;if(!std::isfinite(v))throw OfxStatus(kOfxStatErrValue);return v;}
-static int choiceValue(OfxParamSetHandle ps,const char* name,double t){OfxParamHandle h=nullptr;int v=0;auto status=a->paramGetHandle(ps,name,&h,nullptr);if(status!=kOfxStatOK)throw status;status=a->paramGetValueAtTime(h,t,&v);if(status!=kOfxStatOK)throw status;return v;}
+static double value(OfxParamSetHandle ps,const char* name,double t){auto& r=parameter(ps,name,t);if(!r.hasReal){auto status=a->paramGetValueAtTime(r.handle,t,&r.real);if(status!=kOfxStatOK)throw status;if(!std::isfinite(r.real))throw OfxStatus(kOfxStatErrValue);r.hasReal=true;}return r.real;}
+static int choiceValue(OfxParamSetHandle ps,const char* name,double t){auto& r=parameter(ps,name,t);if(!r.hasInt){auto status=a->paramGetValueAtTime(r.handle,t,&r.integer);if(status!=kOfxStatOK)throw status;r.hasInt=true;}return r.integer;}
 static void choice(OfxParamSetHandle ps,const char* name,std::initializer_list<const char*> labels){OfxPropertySetHandle q;defineParam(ps,kOfxParamTypeChoice,name,&q);int i=0;for(auto label:labels)str(q,kOfxParamPropChoiceOption,label,i++);}
 static void toggle(OfxParamSetHandle ps,const char* name,int initial){OfxPropertySetHandle q;defineParam(ps,kOfxParamTypeBoolean,name,&q);integer(q,kOfxParamPropDefault,initial);}
 static double mapped(OfxImageEffectHandle fx,double t){
@@ -48,9 +88,26 @@ static double mapped(OfxImageEffectHandle fx,double t){
  double result=gross::frame(t,fps,bpm,beats,origin,mode,steps);
  double range[2];if(p->propGetDoubleN(cp,kOfxImageEffectPropFrameRange,2,range)==kOfxStatOK)result=gross::clampFrame(result,range[0],range[1]);return result;
 }
+static void uiState(OfxParamSetHandle ps,const char* name,bool enabled,bool hidden=false){
+ OfxParamHandle h=nullptr;OfxPropertySetHandle q=nullptr;
+ if(a->paramGetHandle(ps,name,&h,&q)==kOfxStatOK&&q){integer(q,kOfxParamPropEnabled,enabled);integer(q,kOfxParamPropSecret,hidden);}
+}
+static void updateUI(OfxParamSetHandle ps,double t){
+ bool time=choiceValue(ps,"Time enabled",t)!=0,fade=choiceValue(ps,"Fade enabled",t)!=0;
+ bool custom=time&&choiceValue(ps,"Preset",t)==5;
+ int fadePreset=choiceValue(ps,"Fade preset",t);bool customFade=fade&&fadePreset==9;
+ uiState(ps,"Preset",time);uiState(ps,"Beats",time);
+ for(auto name:{"Custom time","Custom interpolation","Reset time pattern"})uiState(ps,name,custom,!custom);
+ for(auto name:{"Custom fade","Fade interpolation","Reset fade pattern"})uiState(ps,name,customFade,!customFade);
+ for(int i=0;i<16;i++){char name[32];std::snprintf(name,sizeof(name),"Step %02d",i+1);uiState(ps,name,custom,!custom);std::snprintf(name,sizeof(name),"Fade point %02d",i+1);uiState(ps,name,customFade,!customFade);}
+ for(auto name:{"Fade preset","Fade target","Fade beats","Fade phase","Fade depth","Fade minimum"})uiState(ps,name,fade);
+ const bool duty=fadePreset==0||fadePreset==1||fadePreset==5||fadePreset==6||fadePreset==7;
+ uiState(ps,"Fade duty",fade&&duty,!duty);
+}
 struct Image {OfxPropertySetHandle h=nullptr;~Image(){if(h)e->clipReleaseImage(h);}};
 static OfxStatus entry(const char* action,const void* handle,OfxPropertySetHandle in,OfxPropertySetHandle out){
  try {
+ ReadScope readScope;
  auto fx=(OfxImageEffectHandle)handle;
  if(!std::strcmp(action,kOfxActionLoad)){
  p=(OfxPropertySuiteV1*)host->fetchSuite(host->host,kOfxPropertySuite,1);e=(OfxImageEffectSuiteV1*)host->fetchSuite(host->host,kOfxImageEffectSuite,1);a=(OfxParameterSuiteV1*)host->fetchSuite(host->host,kOfxParameterSuite,1);messages=(OfxMessageSuiteV1*)host->fetchSuite(host->host,kOfxMessageSuite,1);return p&&e&&a?kOfxStatOK:kOfxStatErrMissingHostFeature;}
@@ -59,8 +116,11 @@ static OfxStatus entry(const char* action,const void* handle,OfxPropertySetHandl
  if(!std::strcmp(action,kOfxImageEffectActionDescribeInContext)){
  OfxPropertySetHandle q;for(auto name:{"Source","Output"}){e->clipDefine(fx,name,&q);str(q,kOfxImageEffectPropSupportedComponents,kOfxImageComponentRGBA);integer(q,kOfxImageEffectPropTemporalClipAccess,1);}
  OfxParamSetHandle ps;e->getParamSet(fx,&ps);
- for(auto group:{"Timing","Custom time","Video fade","Custom fade","Music sync"}){defineParam(ps,kOfxParamTypeGroup,group,&q);integer(q,kOfxParamPropGroupOpen,0);}
+ for(auto group:{"Timing","Custom time","Video fade","Custom fade","Music sync"}){defineParam(ps,kOfxParamTypeGroup,group,&q);integer(q,kOfxParamPropGroupOpen,!std::strcmp(group,"Timing"));}
  defineParam(ps,kOfxParamTypeChoice,"Preset",&q);for(int i=0;i<int(gross::presetNames.size());i++)str(q,kOfxParamPropChoiceOption,gross::presetNames[i],i);
+ defineParam(ps,kOfxParamTypePushButton,"Align here",&q);
+ defineParam(ps,kOfxParamTypePushButton,"Reset time pattern",&q);
+ defineParam(ps,kOfxParamTypePushButton,"Reset fade pattern",&q);
  toggle(ps,"Time enabled",1);toggle(ps,"Safe frame fallback",1);choice(ps,"Custom interpolation",{"Hold","Linear","Smooth"});
  number(ps,"BPM",120,1,400);number(ps,"Beats",4,1,16);number(ps,"Origin frame",0,-1000000,1000000);
  for(int i=0;i<16;i++){char name[32];std::snprintf(name,sizeof(name),"Step %02d",i+1);number(ps,name,i/16.0,0,1);}
@@ -76,11 +136,23 @@ static OfxStatus entry(const char* action,const void* handle,OfxPropertySetHandl
  defineParam(ps,kOfxParamTypePushButton,"Analyze music",&q);
  str(q,kOfxParamPropHint,"Analyze the first 30 seconds of a WAV; estimate BPM and first strong onset. Set Music start frame to align the file with the effect timeline.");
  return kOfxStatOK;}
+ if(!std::strcmp(action,kOfxActionCreateInstance)){
+  OfxParamSetHandle ps;e->getParamSet(fx,&ps);updateUI(ps,0);return kOfxStatOK;
+ }
  if(!std::strcmp(action,kOfxActionInstanceChanged)){
   char *name=nullptr,*reason=nullptr;
   p->propGetString(in,kOfxPropName,0,&name);p->propGetString(in,kOfxPropChangeReason,0,&reason);
-  if(!name||std::strcmp(name,"Analyze music")||!reason||std::strcmp(reason,kOfxChangeUserEdited))return kOfxStatReplyDefault;
   OfxParamSetHandle ps;e->getParamSet(fx,&ps);double t=0;p->propGetDouble(in,kOfxPropTime,0,&t);
+  if(name&&(!std::strcmp(name,"Preset")||!std::strcmp(name,"Fade preset")||!std::strcmp(name,"Time enabled")||!std::strcmp(name,"Fade enabled")))updateUI(ps,t);
+  if(!name||!reason||std::strcmp(reason,kOfxChangeUserEdited))return kOfxStatReplyDefault;
+  if(!std::strcmp(name,"Align here")||!std::strcmp(name,"Reset time pattern")||!std::strcmp(name,"Reset fade pattern")){
+   auto set=[&](const char* key,double v){OfxParamHandle h=nullptr;auto status=a->paramGetHandle(ps,key,&h,nullptr);if(status==kOfxStatOK)status=a->paramSetValueAtTime(h,t,v);return status;};
+   a->paramEditBegin(ps,name);OfxStatus status=kOfxStatOK;
+   if(!std::strcmp(name,"Align here"))status=set("Origin frame",t);
+   else for(int i=0;i<16&&status==kOfxStatOK;i++){char key[32];bool fade=!std::strcmp(name,"Reset fade pattern");std::snprintf(key,sizeof(key),fade?"Fade point %02d":"Step %02d",i+1);status=set(key,fade?1.0:i/16.0);}
+   a->paramEditEnd(ps);return status;
+  }
+  if(std::strcmp(name,"Analyze music"))return kOfxStatReplyDefault;
   try {
    OfxParamHandle path;char* file=nullptr;
    if(a->paramGetHandle(ps,"Music WAV",&path,nullptr)!=kOfxStatOK||a->paramGetValue(path,&file)!=kOfxStatOK||!file)throw std::runtime_error("Select a WAV file first.");
@@ -114,7 +186,6 @@ static OfxStatus entry(const char* action,const void* handle,OfxPropertySetHandl
   std::fprintf(stderr,"Gross Video: source request failed, output=%.9g requested=%.9g fallback=%d status=%d\n",t,requested,int(usedFallback),sourceStatus);
   return sourceStatus;
  }
- if(usedFallback)std::fprintf(stderr,"Gross Video: unavailable temporal frame %.9g; using output frame %.9g\n",requested,t);
  if(e->clipGetImage(dest,t,nullptr,&d.h)!=kOfxStatOK)return kOfxStatFailed;
  void *sp=nullptr,*dp=nullptr;int sb[4]={},db[4]={},win[4]={},sr=0,dr=0;p->propGetPointer(s.h,kOfxImagePropData,0,&sp);p->propGetPointer(d.h,kOfxImagePropData,0,&dp);p->propGetIntN(s.h,kOfxImagePropBounds,4,sb);p->propGetIntN(d.h,kOfxImagePropBounds,4,db);p->propGetIntN(in,kOfxImageEffectPropRenderWindow,4,win);p->propGetInt(s.h,kOfxImagePropRowBytes,0,&sr);p->propGetInt(d.h,kOfxImagePropRowBytes,0,&dr);
  if(!gross::validImage(sp,sb,sr)||!gross::validImage(dp,db,dr))return kOfxStatErrImageFormat;
@@ -136,11 +207,11 @@ static OfxStatus entry(const char* action,const void* handle,OfxPropertySetHandl
   char* premult=nullptr;if(p->propGetString(s.h,kOfxImageEffectPropPreMultiplication,0,&premult)==kOfxStatOK && premult)premultiplied=std::strcmp(premult,kOfxImageUnPreMultiplied)!=0;
  }
  const int left=std::max(win[0],db[0]),right=std::min(win[2],db[2]);
+ const int lo=std::max(left,sb[0]),hi=std::min(right,sb[2]);
  for(int y=std::max(win[1],db[1]);y<std::min(win[3],db[3]);y++){
   if((y&31)==0&&e->abort(fx))break;
   if(right<=left)continue;
   auto row=(char*)dp+std::ptrdiff_t(y-db[1])*dr;
-  const int lo=std::max(left,sb[0]),hi=std::min(right,sb[2]);
   if(y<sb[1]||y>=sb[3]||hi<=lo){std::memset(row+(left-db[0])*16,0,(right-left)*16);continue;}
   if(lo>left)std::memset(row+(left-db[0])*16,0,(lo-left)*16);
   if(hi<right)std::memset(row+(hi-db[0])*16,0,(right-hi)*16);
@@ -152,6 +223,6 @@ static OfxStatus entry(const char* action,const void* handle,OfxPropertySetHandl
  return kOfxStatReplyDefault;
  }catch(OfxStatus status){return status;}catch(...){return kOfxStatFailed;}
 }
-static OfxPlugin plugin={kOfxImageEffectPluginApi,1,"com.tristokoni.grossvideo",1,3,setHost,entry};
+static OfxPlugin plugin={kOfxImageEffectPluginApi,1,"com.tristokoni.grossvideo",1,4,setHost,entry};
 extern "C" __attribute__((visibility("default"))) int OfxGetNumberOfPlugins(){return 1;}
 extern "C" __attribute__((visibility("default"))) OfxPlugin* OfxGetPlugin(int n){return n==0?&plugin:nullptr;}

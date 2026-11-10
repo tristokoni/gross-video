@@ -9,7 +9,7 @@ xcrun clang++ -std=c++17 -O3 -Wall -Wextra -arch arm64 -arch x86_64 -mmacosx-ver
 cat > "$bundle/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.tristokoni.grossvideo</string><key>CFBundleName</key><string>Gross Video</string><key>CFBundleExecutable</key><string>GrossVideo.ofx</string><key>CFBundlePackageType</key><string>BNDL</string><key>CFBundleVersion</key><string>1.3</string></dict></plist>
+<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.tristokoni.grossvideo</string><key>CFBundleName</key><string>Gross Video</string><key>CFBundleExecutable</key><string>GrossVideo.ofx</string><key>CFBundlePackageType</key><string>BNDL</string><key>CFBundleVersion</key><string>1.4</string></dict></plist>
 PLIST
 codesign --force --sign - "$bundle"
 codesign --verify --strict "$bundle"

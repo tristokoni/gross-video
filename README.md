@@ -123,3 +123,17 @@ Supported files: ordinary RIFF WAV, PCM 16/24-bit or IEEE float32, 8–192 kHz, 
 The lightweight detector uses onset-energy autocorrelation, roughly 60–182 BPM. It estimates steady tempo and an initial strong onset, not the musical downbeat, variable tempo, or the audio track position in Resolve. It may choose half/double tempo; check the result by ear and adjust BPM/Origin. Silence or ambiguous rhythm reports an error without changing controls. Analysis is synchronous and bounded; the UI may briefly pause on slower devices.
 
 Validated on Linux: all timing/envelope/render support tests, strict OFX descriptor regression, identity regression, synthetic 120 BPM WAV analysis and rejection of silence/missing files, under AddressSanitizer and UndefinedBehaviorSanitizer. Actual macOS save/reopen, new preset playback and button integration require Resolve validation.
+
+## Streamlined controls and render overhead (1.4)
+
+Timing opens by default. Custom time points appear only when Time enabled is on and Custom steps is selected. Custom fade points appear only with Fade enabled and Custom envelope selected. Fade controls are disabled when fade is off; pulse width/recovery is hidden for presets that do not use it. This uses standard OFX Inspector visibility/enabled properties; exact appearance depends on Resolve. Existing saved parameter names and preset indices remain unchanged.
+
+- **Align here** sets the beat anchor to the playhead frame.
+- **Reset time pattern** sets the 16 custom positions to ascending steps.
+- **Reset fade pattern** sets all 16 levels to fully visible.
+- Buttons create keyframes at the current playhead and group their changes into one undo edit. Other keyframes remain intact.
+- Clearer labels distinguish Time preset, Time cycle (beats), Beat anchor (frame), Fade amount and Fade cycle (beats). Tooltips explain normalized positions and fallback behavior. Frame slider display ranges are narrower while typed values retain the full permitted range.
+
+Parameter reads now use a bounded stack cache for each OFX action, with no heap allocations for that cache. Duplicate host handle lookups and value samples at the same time are reused; values never persist across actions. Thread-local scope pointers isolate concurrent render threads and restore state after nested callbacks. Changing time or parameter set invalidates the cache. Horizontal image intersections are computed once per frame instead of once per row. Successful fallback frames no longer emit a log line each; failed source requests still report diagnostics.
+
+A mock-host regression verifies 100 repeated reads produce one lookup and one sample, fresh reads at new times/instances, nested scopes, control visibility, button edits and undo brackets. This is a host-call reduction measurement, not a Resolve FPS benchmark. Source decoding, memory bandwidth and GPU/host processing can still dominate. UI/save/reopen integration and performance on macOS remain to be checked in Resolve. No custom drawn curve editor or GPU renderer is introduced.
